@@ -17,11 +17,15 @@ public class Server extends Thread {
     private final short ACK = 4;
     private final short ERROR = 5;
 
+    // 2 byte error code
+    private final short ERR_FNF = 1;
+
     private byte[] buffer = new byte[516];
     private DatagramPacket receivedPacket;
     private InetAddress clientAddress;
     private int clientPort;
 
+    private File file;
     private String fileName;
     private final String path = "src/main/java/";
 
@@ -59,6 +63,8 @@ public class Server extends Thread {
             if (opcode == RRQ || opcode == WRQ) {
                 parseRequestPacket(receivedPacket);
 
+                file = new File(path + fileName);
+
                 if (opcode == RRQ) {
                     System.out.println("Read request from " + clientAddress.getHostName() + " at port: " + clientPort);
                     try {
@@ -82,20 +88,18 @@ public class Server extends Thread {
         }
     }
 
-
     /**
      * Sends the file to the client in data packets and waits for acknowledgement packets in return
      */
     private void HandleReadRequest() throws IOException {
-        File file = new File(path + fileName);
-        FileInputStream inputStream;
-        try {
-            inputStream = new FileInputStream(file);
-        } catch (FileNotFoundException e) {
+        if (!file.exists()) {
             System.err.println("Requested file not found. Sending error packet.");
-            // TODO construct and send error packet
+            DatagramPacket ERRORPacket = constructErrorPacket(ERR_FNF, "Requested file not found.", clientAddress, clientPort);
+            socket.send(ERRORPacket);
             return;
         }
+
+        FileInputStream inputStream = new FileInputStream(file);
 
         byte[] dataBuffer = new byte[512];
         int bytesRead;
@@ -127,9 +131,8 @@ public class Server extends Thread {
             socket.receive(receivedPacket);
 
             // check opcode and block number of received packet
-            short receivedOpcode = parseOpcode(receivedPacket);
             short receivedBlockNumber = parseBlockNumber(receivedPacket);
-            if (receivedOpcode == ACK && receivedBlockNumber == blockNumber) {
+            if (parseOpcode(receivedPacket) == ACK && receivedBlockNumber == blockNumber) {
                 System.out.println("Success, received ACK packet with block number: " + receivedBlockNumber);
                 blockNumber++;
             }
@@ -143,8 +146,6 @@ public class Server extends Thread {
      * Sends acknowledgement packets to the client and received data packets, writing the data into a new file
      */
     private void HandleWriteRequest() throws IOException {
-        File file = new File(path + fileName);
-
         short blockNumber = 0;
 
         // Create an acknowledgement packet to send back to the client
@@ -158,9 +159,8 @@ public class Server extends Thread {
             receivedPacket = new DatagramPacket(buffer, buffer.length);
             socket.receive(receivedPacket);
 
-            short receivedOpcode = parseOpcode(receivedPacket);
             short receivedBlockNumber = parseBlockNumber(receivedPacket);
-            if (receivedOpcode == DATA && receivedBlockNumber == blockNumber + 1) {
+            if (parseOpcode(receivedPacket) == DATA && receivedBlockNumber == blockNumber + 1) {
                 System.out.println("Success, received DATA packet with block number: " + receivedBlockNumber);
                 outputStream.write(receivedPacket.getData(), 4, receivedPacket.getLength() - 4);
 
@@ -215,6 +215,29 @@ public class Server extends Thread {
         byteBuffer.putShort(ACK);
         byteBuffer.putShort(blockNumber);
         return new DatagramPacket(byteBuffer.array(), ACKPacketSize, address, port);
+    }
+
+
+    /**
+     * Creates a packet following the TFTP error packet format
+     * @param errorCode The error code
+     * @param errorMessage The error message
+     * @param address The address to send the packet to
+     * @param port The port to send the packet to
+     * @return A datagram packet
+     */
+    private DatagramPacket constructErrorPacket(short errorCode, String errorMessage, InetAddress address, int port) throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        DataOutputStream out = new DataOutputStream(baos);
+
+        out.writeShort(ERROR);
+        out.writeShort(errorCode);
+        out.write(errorMessage.getBytes());
+        out.write(0);
+        out.close();
+
+        byte[] buffer = baos.toByteArray();
+        return new DatagramPacket(buffer, buffer.length, address, port);
     }
 
     /**
