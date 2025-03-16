@@ -1,46 +1,44 @@
-import java.io.ByteArrayInputStream;
-import java.io.DataInputStream;
-import java.io.IOException;
+import java.io.*;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.SocketException;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
+import java.util.Arrays;
 
 public class Server extends Thread {
-    private DatagramSocket socket;
-    private boolean running;
-    private byte[] buffer = new byte[256];
-
+    private final DatagramSocket socket;
     private final int port = 69; // TFTP uses 69, which is below 1024 and may not work without administrator rights
 
     // 2 byte opcode / operation
-    private short RRQ = 1;
-    private short WRQ = 2;
-    private short DATA = 3;
-    private short ACK = 4;
-    private short ERROR = 5;
+    private final short RRQ = 1;
+    private final short WRQ = 2;
+    private final short DATA = 3;
+    private final short ACK = 4;
+    private final short ERROR = 5;
 
-    /**
-     * example javadoc
-     * @param args args
-     */
+    private byte[] buffer = new byte[516];
+    private DatagramPacket receivedPacket;
+    private InetAddress clientAddress;
+    private int clientPort;
+
+    private String fileName;
+    private final String path = "src/main/java/";
+
     public static void main(String[] args) throws SocketException {
         new Server().start();
     }
 
     public Server() throws SocketException {
+        // TODO create a new thread every time client connects, look at TCP lab
         socket = new DatagramSocket(port);
     }
 
     public void run() {
         System.out.println("Server has started running and listening at port: " + port);
 
-        running = true;
-
-        while (running) {
-            DatagramPacket receivedPacket = new DatagramPacket(buffer, buffer.length);
+        while (true) {
+            receivedPacket = new DatagramPacket(buffer, buffer.length);
 
             // Receive packet from client
             try {
@@ -50,86 +48,213 @@ public class Server extends Thread {
                 throw new RuntimeException(e);
             }
 
-            InetAddress clientAddress = receivedPacket.getAddress();
-            int clientPort = receivedPacket.getPort();
+            // Get the address and port
+            clientAddress = receivedPacket.getAddress();
+            clientPort = receivedPacket.getPort();
 
-            // determine the request (RRQ, WRQ etc)
+            // Get the opcode
+            short opcode = parseOpcode(receivedPacket);
 
-            DataInputStream in = new DataInputStream(new ByteArrayInputStream(buffer));
-            try {
-                short opcode = in.readShort();
+            // Determine the request type
+            if (opcode == RRQ || opcode == WRQ) {
+                parseRequestPacket(receivedPacket);
 
-                if (opcode == RRQ || opcode == WRQ) {
-                    System.out.println("Read/Write request from " + clientAddress.getHostName() + " at port:" + clientPort);
-
-                    int delimiterIndex = - 1;
-
-                    // loop through until hit 0, store that index as the end of the file name, then do the same for mode
-
-                    // start at 2, because we know the first 2 bytes will contain opcode
-                    for (int i = 2; i < buffer.length; i++) {
-                        if (buffer[i] == 0) { // we've hit the first 0
-                            delimiterIndex = i;
-                            break;
-                        }
-                    }
-
-                    String fileName = new String(buffer, 2, delimiterIndex - 2);
-                    System.out.println(fileName);
-
-                    for (int i = delimiterIndex; i < buffer.length; i++) {
-                        if (buffer[i] == 0) { // we've hit the second 0
-                            delimiterIndex = i;
-                            break;
-                        }
-                    }
-
-                    String mode = new String(buffer, 2 + fileName.length()+1, delimiterIndex - 2 + fileName.length()-5); // -5?
-                    System.out.println(mode);
-
-                    if (opcode == RRQ) {
-                        // TODO send DATA with block number 1 back to client
-                        System.out.println("Read request initial connection...");
-                        byte[] signal = "ACK".getBytes();
-                        receivedPacket = new DatagramPacket(signal, signal.length, clientAddress, clientPort);
-                        socket.send(receivedPacket);
-                    }
-                    else if (opcode == WRQ) {
-                        // TODO send ACK with block number 0 back to client
+                if (opcode == RRQ) {
+                    System.out.println("Read request from " + clientAddress.getHostName() + " at port: " + clientPort);
+                    try {
+                        HandleReadRequest();
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
                     }
                 }
                 else {
-                    // TODO deal with ERROR, ACK...
+                    System.out.println("Write request from " + clientAddress.getHostName() + " at port: " + clientPort);
+                    try {
+                        HandleWriteRequest();
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
                 }
-
-
             }
-            catch (IOException e) {
-                throw new RuntimeException(e);
+            else {
+                System.err.println("Received unknown packet. Disregarding packet. (1)");
             }
-
-            //ByteBuffer byteBuffer = ByteBuffer.wrap(buffer);
-            //short opcode = byteBuffer.getShort();
-
-            // TODO This is where server should check the packet headers, the ack number?, and what type of
-            // request the user is making?
-            // put logic into a thread? to allow for server to handle multiple clients
-
-            // get address, port, and length of packet from the client
-
-            /*
-            // assign a new packet with an address and port, to send back to the client
-            receivedPacket = new DatagramPacket(buffer, receivedLength, clientAddress, port);
-            String received = new String(receivedPacket.getData(), 0, receivedPacket.getLength());
-
-            try {
-                socket.send(receivedPacket);
-            }
-            catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-
-             */
         }
     }
+
+
+    /**
+     * Sends the file to the client in data packets and waits for acknowledgement packets in return
+     */
+    private void HandleReadRequest() throws IOException {
+        File file = new File(path + fileName);
+        FileInputStream inputStream;
+        try {
+            inputStream = new FileInputStream(file);
+        } catch (FileNotFoundException e) {
+            System.err.println("Requested file not found. Sending error packet.");
+            // TODO construct and send error packet
+            return;
+        }
+
+        byte[] dataBuffer = new byte[512];
+        int bytesRead;
+        short blockNumber = 1;
+
+        while (true) {
+            // Read up to 512 bytes from the file and store in the data buffer
+            bytesRead = inputStream.read(dataBuffer);
+            if (bytesRead == -1) {
+                dataBuffer = new byte[0];
+            }
+            else {
+                dataBuffer = Arrays.copyOf(dataBuffer, bytesRead);
+            }
+
+            // Create a data packet from the data buffer and the current block number
+            DatagramPacket DATAPacket = constructDataPacket(blockNumber, dataBuffer, clientAddress, clientPort);
+            socket.send(DATAPacket);
+
+            System.out.println("Sent DATA packet with block number: " + blockNumber + " and " + bytesRead + " bytes of data");
+
+            if (bytesRead < 512) {
+                System.out.println("Finished writing file to client.");
+                inputStream.close();
+                break;
+            }
+
+            receivedPacket = new DatagramPacket(buffer, buffer.length);
+            socket.receive(receivedPacket);
+
+            // check opcode and block number of received packet
+            short receivedOpcode = parseOpcode(receivedPacket);
+            short receivedBlockNumber = parseBlockNumber(receivedPacket);
+            if (receivedOpcode == ACK && receivedBlockNumber == blockNumber) {
+                System.out.println("Success, received ACK packet with block number: " + receivedBlockNumber);
+                blockNumber++;
+            }
+            else {
+                System.err.println("Received unknown packet. Disregarding packet. (2)");
+            }
+        }
+    }
+
+    /**
+     * Sends acknowledgement packets to the client and received data packets, writing the data into a new file
+     */
+    private void HandleWriteRequest() throws IOException {
+        File file = new File(path + fileName);
+
+        short blockNumber = 0;
+
+        // Create an acknowledgement packet to send back to the client
+        DatagramPacket ACKPacket = constructACKPacket(blockNumber, clientAddress, clientPort);
+        socket.send(ACKPacket);
+
+        DataOutputStream outputStream = new DataOutputStream(new FileOutputStream(file));
+
+        do {
+            // receive data packet from client
+            receivedPacket = new DatagramPacket(buffer, buffer.length);
+            socket.receive(receivedPacket);
+
+            short receivedOpcode = parseOpcode(receivedPacket);
+            short receivedBlockNumber = parseBlockNumber(receivedPacket);
+            if (receivedOpcode == DATA && receivedBlockNumber == blockNumber + 1) {
+                System.out.println("Success, received DATA packet with block number: " + receivedBlockNumber);
+                outputStream.write(receivedPacket.getData(), 4, receivedPacket.getLength() - 4);
+
+                // Send ACK packet to client with the same block number as the data packet
+                ACKPacket = constructACKPacket(receivedBlockNumber, receivedPacket.getAddress(), receivedPacket.getPort());
+                socket.send(ACKPacket);
+                System.out.println("Sent ACK packet with block number: " + receivedBlockNumber);
+
+                blockNumber = receivedBlockNumber;
+            }
+            else {
+                System.err.println("Received block number incorrect, duplicate packet?");
+            }
+        }
+        while (receivedPacket.getLength() >= 512);
+
+        System.out.println("Finished reading file from client.");
+        outputStream.close();
+    }
+
+    /**
+     * Creates a packet following the TFTP data packet format
+     * @param blockNumber The block number of the packet
+     * @param data The actual data to send
+     * @param address The address to send the packet to
+     * @param port The port to send the packet to
+     * @return A datagram packet
+     */
+    private DatagramPacket constructDataPacket(short blockNumber, byte[] data, InetAddress address, int port) throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        DataOutputStream out = new DataOutputStream(baos);
+
+        out.writeShort(DATA);
+        out.writeShort(blockNumber);
+        out.write(data);
+        out.close();
+
+        byte[] buffer = baos.toByteArray();
+        return new DatagramPacket(buffer, buffer.length, address, port);
+    }
+
+    /**
+     * Creates a packet following the TFTP acknowledgement packet format
+     * @param blockNumber The block number of the packet
+     * @param address The address to send the packet to
+     * @param port The port to send the packet to
+     * @return A datagram packet
+     */
+    private DatagramPacket constructACKPacket(short blockNumber, InetAddress address, int port) {
+        int ACKPacketSize = 4;
+        ByteBuffer byteBuffer = ByteBuffer.allocate(ACKPacketSize);
+        byteBuffer.putShort(ACK);
+        byteBuffer.putShort(blockNumber);
+        return new DatagramPacket(byteBuffer.array(), ACKPacketSize, address, port);
+    }
+
+    /**
+     * Loops through the packet and reads the file name
+     * @param packet The TFTP request packet
+     */
+    private void parseRequestPacket(DatagramPacket packet) {
+        byte[] buffer = packet.getData();
+
+        int delimiter = - 1;
+
+        // start at 2, because we know the first 2 bytes will contain opcode
+        for (int i = 2; i < buffer.length; i++) {
+            if (buffer[i] == 0) { // loop until it finds first 0
+                delimiter = i;
+                break;
+            }
+        }
+
+        fileName = new String(buffer, 2, delimiter - 2);
+    }
+
+    /**
+     * Reads the two byte opcode at the start of all TFTP packets
+     * @param packet The TFTP packet
+     * @return short value representing the opcode
+     */
+    private short parseOpcode(DatagramPacket packet) {
+        ByteBuffer byteBuffer = ByteBuffer.wrap(packet.getData());
+        return byteBuffer.getShort();
+    }
+
+    /**
+     * Reads the two byte block number in certain TFTP packets
+     * @param packet The TFTP packet
+     * @return short value representing the opcode
+     */
+    private short parseBlockNumber(DatagramPacket packet) {
+        ByteBuffer byteBuffer = ByteBuffer.wrap(packet.getData());
+        return byteBuffer.getShort(2);
+    }
 }
+
