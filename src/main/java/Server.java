@@ -83,7 +83,7 @@ public class Server extends Thread {
                 }
             }
             else {
-                System.err.println("Received unknown packet. Disregarding packet. (1)");
+                System.err.println("Received unknown packet. Disregarding packet.");
             }
         }
     }
@@ -94,7 +94,8 @@ public class Server extends Thread {
     private void HandleReadRequest() throws IOException {
         if (!file.exists()) {
             System.err.println("Requested file not found. Sending error packet.");
-            DatagramPacket ERRORPacket = constructErrorPacket(ERR_FNF, "Requested file not found.", clientAddress, clientPort);
+            String errorMessage = "Requested file: '" + fileName + "' not found.";
+            DatagramPacket ERRORPacket = constructErrorPacket(ERR_FNF, errorMessage, clientAddress, clientPort);
             socket.send(ERRORPacket);
             return;
         }
@@ -130,25 +131,31 @@ public class Server extends Thread {
             receivedPacket = new DatagramPacket(buffer, buffer.length);
             socket.receive(receivedPacket);
 
-            // check opcode and block number of received packet
-            short receivedBlockNumber = parseBlockNumber(receivedPacket);
-            if (parseOpcode(receivedPacket) == ACK && receivedBlockNumber == blockNumber) {
-                System.out.println("Success, received ACK packet with block number: " + receivedBlockNumber);
-                blockNumber++;
+            // Check TIDs match and block number is correct
+            if (receivedPacket.getPort() == clientPort) {
+                short receivedBlockNumber = parseBlockNumber(receivedPacket);
+                if (parseOpcode(receivedPacket) == ACK && receivedBlockNumber == blockNumber) {
+                    System.out.println("Success, received ACK packet with block number: " + receivedBlockNumber);
+                    blockNumber++;
+                }
+                else {
+                    System.err.println("Received unknown packet or incorrect block number. Disregarding packet and retransmitting DATA packet...");
+                    // TODO retransmit
+                }
             }
             else {
-                System.err.println("Received unknown packet. Disregarding packet. (2)");
+                System.err.println("Received packet from unknown port. Disregarding packet.");
             }
         }
     }
 
     /**
-     * Sends acknowledgement packets to the client and received data packets, writing the data into a new file
+     * Sends acknowledgement packets to the client and receives data packets, writing the data into a new file
      */
     private void HandleWriteRequest() throws IOException {
         short blockNumber = 0;
 
-        // Create an acknowledgement packet to send back to the client
+        // Create an acknowledgement packet (with block number 0) to send back to the client
         DatagramPacket ACKPacket = constructACKPacket(blockNumber, clientAddress, clientPort);
         socket.send(ACKPacket);
 
@@ -159,21 +166,29 @@ public class Server extends Thread {
             receivedPacket = new DatagramPacket(buffer, buffer.length);
             socket.receive(receivedPacket);
 
-            short receivedBlockNumber = parseBlockNumber(receivedPacket);
-            if (parseOpcode(receivedPacket) == DATA && receivedBlockNumber == blockNumber + 1) {
-                System.out.println("Success, received DATA packet with block number: " + receivedBlockNumber);
-                outputStream.write(receivedPacket.getData(), 4, receivedPacket.getLength() - 4);
+            // Check TIDs match and block number is correct
+            if (receivedPacket.getPort() == clientPort) {
+                short receivedBlockNumber = parseBlockNumber(receivedPacket);
+                if (parseOpcode(receivedPacket) == DATA && receivedBlockNumber == blockNumber + 1) {
+                    System.out.println("Success, received DATA packet with block number: " + receivedBlockNumber);
+                    outputStream.write(receivedPacket.getData(), 4, receivedPacket.getLength() - 4);
 
-                // Send ACK packet to client with the same block number as the data packet
-                ACKPacket = constructACKPacket(receivedBlockNumber, receivedPacket.getAddress(), receivedPacket.getPort());
-                socket.send(ACKPacket);
-                System.out.println("Sent ACK packet with block number: " + receivedBlockNumber);
+                    // Send ACK packet to client with the same block number as the data packet
+                    ACKPacket = constructACKPacket(receivedBlockNumber, receivedPacket.getAddress(), receivedPacket.getPort());
+                    socket.send(ACKPacket);
+                    System.out.println("Sent ACK packet with block number: " + receivedBlockNumber);
 
-                blockNumber = receivedBlockNumber;
+                    blockNumber = receivedBlockNumber;
+                }
+                else {
+                    System.err.println("Received unknown packet or incorrect block number. Disregarding packet and retransmitting ACK packet...");
+                    // TODO retransmit
+                }
             }
             else {
-                System.err.println("Received block number incorrect, duplicate packet?");
+                System.err.println("Received packet from unknown port. Disregarding packet.");
             }
+
         }
         while (receivedPacket.getLength() >= 512);
 
@@ -233,7 +248,7 @@ public class Server extends Thread {
         out.writeShort(ERROR);
         out.writeShort(errorCode);
         out.write(errorMessage.getBytes());
-        out.write(0);
+        out.writeByte(0);
         out.close();
 
         byte[] buffer = baos.toByteArray();
