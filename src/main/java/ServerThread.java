@@ -189,7 +189,7 @@ public class ServerThread extends Thread {
             }
 
         }
-        while (receivedPacket.getLength() >= 512);
+        while (receivedPacket.getLength() >= 516);
 
         System.out.println("Finished reading file from client.");
         outputStream.close();
