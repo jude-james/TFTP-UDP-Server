@@ -4,26 +4,22 @@ import java.net.DatagramSocket;
 import java.util.Random;
 
 public class Server {
-    private final int port = 69; // TFTP uses 69, which is below 1024 and may not work without administrator rights
+    public static void main(String[] args) throws IOException {
+        int port = 69; // TFTP uses port number 69
 
-    private DatagramSocket socket;
-    private DatagramPacket receivedPacket;
-
-    private byte[] buffer = new byte[516];
-
-    public void main(String[] args) throws IOException {
-        socket = new DatagramSocket(port);
+        DatagramSocket socket = new DatagramSocket(port);
+        byte[] buffer = new byte[516];
 
         System.out.println("Server has started running and listening at port: " + port);
 
         while (true) {
-            receivedPacket = new DatagramPacket(buffer, buffer.length);
+            DatagramPacket receivedPacket = new DatagramPacket(buffer, buffer.length);
 
             // Receive initial packet from client
             socket.receive(receivedPacket);
 
             // create a new server thread, passing a random port number and the initial packet
-            int port = new Random().nextInt(65_536); // > 1024 ??
+            port = new Random().nextInt(65_536); // > 1024 ??
             new ServerThread(new DatagramSocket(port), receivedPacket).start();
         }
     }

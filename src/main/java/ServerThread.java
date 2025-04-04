@@ -118,7 +118,7 @@ public class ServerThread extends Thread {
             }
             catch (SocketTimeoutException e) {
                 System.err.println("Timeout occurred. Retransmitting packet.");
-                // TODO retransmit
+                socket.send(DATAPacket);
             }
 
             // Check TIDs match and block number is correct
@@ -130,12 +130,11 @@ public class ServerThread extends Thread {
                 }
                 else {
                     System.err.println("Received unknown packet or incorrect block number. Disregarding packet and retransmitting DATA packet...");
-                    // TODO retransmit
+                    socket.send(DATAPacket);
                 }
             }
             else {
                 System.err.println("Received packet from unknown port. Disregarding packet.");
-                // TODO stop loop from sending data packet again
             }
         }
     }
@@ -160,7 +159,7 @@ public class ServerThread extends Thread {
             }
             catch (SocketTimeoutException e) {
                 System.err.println("Timeout occurred. Retransmitting packet.");
-                // TODO retransmit
+                socket.send(ACKPacket);
             }
 
             // Check TIDs match and block number is correct
@@ -182,7 +181,7 @@ public class ServerThread extends Thread {
                 }
                 else {
                     System.err.println("Received unknown packet or incorrect block number. Disregarding packet and retransmitting ACK packet...");
-                    // TODO retransmit
+                    socket.send(ACKPacket);
                 }
             }
             else {
